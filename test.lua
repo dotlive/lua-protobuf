@@ -61,7 +61,7 @@ end
 function _G.test_io.test()
    local code = "assert(io.write(require 'pb.io'.read()))"
    assert(pbio.dump("t.lua", code))
-   local fh = assert(io.popen("lua t.lua < t.lua", "r"))
+   local fh = assert(io.popen(arg[-1].." t.lua < t.lua", "r"))
    eq(fh:read "*a", code)
    fh:close()
    assert(os.remove "t.lua")
@@ -158,7 +158,7 @@ function _G.test_depend.test()
 
    load_depend(protoc.new())
    local t = { dep1 = { id = 1, name = "foo" }, other = 2 }
-   check_msg("Depend2Msg", t, { other = 2 })
+   check_msg("Depend2Msg", t, { dep1 = {}, other = 2 })
 
    eq(protoc.new():loadfile "depend1.proto", true)
    local chunk = pb.encode("Depend2Msg", t)
@@ -435,6 +435,7 @@ function _G.test_default()
    pb.option "enum_as_name"
    pb.clear "TestDefault"
    pb.clear "TestNest"
+   pb.option "auto_default_values"
    assert(pb.type ".google.protobuf.FileDescriptorSet")
 end
 
@@ -559,6 +560,7 @@ function _G.test_packed()
       "MessageB", { messageValue = { { intValue = 1 } } })), "0A 02 08 01")
    pb.clear "MessageA"
    pb.clear "MessageB"
+   pb.option "auto_default_values"
    assert(pb.type ".google.protobuf.FileDescriptorSet")
 end
 
@@ -572,20 +574,37 @@ function _G.test_map()
        map<string, TestEmpty> msg_map = 3;
    } ]]
 
-   local data = {
-      map = { one = 1, two = 2, three = 3 };
-      packed_map = { one = 1, two = 2, three = 3 }
-   }
-   check_msg(".TestMap", data)
+   check_msg("TestMap", { map = {}, packed_map = {}, msg_map = {} })
+
+   check_msg(".TestMap", {
+             map = { one = 1, two = 2, three = 3 };
+             packed_map = { one = 1, two = 2, three = 3 }
+          }, {
+             map = { one = 1, two = 2, three = 3 };
+             packed_map = { one = 1, two = 2, three = 3 };
+             msg_map = {}
+          })
 
    local data2 = { map = { one = 1, [1]=1 } }
    fail("string expected for field 'key', got number", function()
       local chunk = pb.encode("TestMap", data2)
-      table_eq(pb.decode("TestMap", chunk), { map = {one = 1} })
+      table_eq(pb.decode("TestMap", chunk), {
+               map = {one = 1},
+               packed_map = {},
+               msg_map = {},
+            })
    end)
    --eq(pb.decode("TestMap", "\10\4\3\10\1\1"), { map = {} })
-   eq(pb.decode("TestMap", "\10\0"), { map = { [""] = 0 } })
-   eq(pb.decode("TestMap", "\26\0"), { msg_map = {} })
+   eq(pb.decode("TestMap", "\10\0"), {
+      map = { [""] = 0 },
+      packed_map = {},
+      msg_map = {}
+   })
+   eq(pb.decode("TestMap", "\26\0"), {
+      map = {},
+      packed_map = {},
+      msg_map = {}
+   })
 
    check_load [[
    syntax = "proto2";
@@ -593,10 +612,53 @@ function _G.test_map()
        map<string, int32> map = 1;
    } ]]
    check_msg("TestMap2", { map = { one = 1, two = 2, three = 3 } })
-   assert(pb.type ".google.protobuf.FileDescriptorSet")
 end
 
 function _G.test_oneof()
+   check_load [[
+   syntax = "proto3";
+   message TO_M1 {
+   }
+   message TO_M2 {
+   }
+   message TO_M3 {
+       int32 value = 1;
+   }
+   message TestOneof { 
+       oneof body_oneof {
+           TO_M1 m1 = 100;
+           TO_M2 m2 = 200;
+           TO_M3 m3 = 300;
+       }
+   } ]]
+   check_msg("TestOneof", {})
+   check_msg("TestOneof", { m1 = {} })
+   check_msg("TestOneof", { m2 = {} })
+   check_msg("TestOneof", { m3 = { value = 0 } })
+   check_msg("TestOneof", { m3 = { value = 10 } })
+   pb.clear "TestOneof"
+
+   check_load [[
+   syntax = "proto3";
+   message TestOneof {
+      oneof body {
+         uint32 foo = 1;
+         string bar = 2;
+      }
+   }
+   message Outter {
+      TestOneof msg = 1;
+   }
+   ]]
+   check_msg("TestOneof", { foo = 0 })
+   check_msg("TestOneof", { bar = "" })
+   check_msg("TestOneof", { foo = 0, bar = "" })
+   check_msg("Outter", { msg = { foo = 0 }})
+   check_msg("Outter", { msg = { bar = "" }})
+   check_msg("Outter", { msg = { foo = 0, bar = "" }})
+   pb.clear "TestOneof"
+   pb.clear "Outter"
+
    check_load [[
    syntax = "proto3";
    message TestOneof {
@@ -606,13 +668,11 @@ function _G.test_oneof()
        }
    } ]]
 
-   local data = { name = "foo" }
-   pb.option "use_default_values"
-   check_msg("TestOneof", data, { name = "foo", value = 0 })
-   pb.option "no_default_values"
-   check_msg("TestOneof", data, { name = "foo" })
+   check_msg("TestOneof", { name = "foo" })
+   check_msg("TestOneof", { value = 0 })
+   check_msg("TestOneof", { name = "foo", value = 0 })
 
-   data = { name = "foo", value = 5 }
+   local data = { name = "foo", value = 5 }
    check_msg("TestOneof", data)
    eq(pb.field("TestOneof", "name"), "name")
    pb.clear("TestOneof", "name")
@@ -620,6 +680,7 @@ function _G.test_oneof()
    eq(pb.type "TestOneof", ".TestOneof")
    pb.clear "TestOneof"
    eq(pb.type "TestOneof", nil)
+   pb.option "auto_default_values"
    assert(pb.type ".google.protobuf.FileDescriptorSet")
 end
 
@@ -740,6 +801,11 @@ function _G.test_buffer()
    eq(#b, 6)
 
    fail("integer format error: 'foo'", function() pb.pack("v", "foo") end)
+   if _VERSION == "Lua 5.3" then
+      fail("integer format error", function() pb.pack("v", 1e308) end)
+   else
+      fail("number has no integer representation", function() pb.pack("v", 1e308) end)
+   end
 
    b = buffer.new()
    fail("encode bytes fail", function() b:pack("#", 10) end)
@@ -891,6 +957,16 @@ function _G.test_load()
    eq(pb.load(buf:result()), true)
    fail("type mismatch at offset 2, <unknown> expected for type <unknown>, got varint",
             function() pb.decode("load_test", "\8\1") end)
+   fail("type mismatch at offset 2, <unknown> expected for type <unknown>, got 64bit",
+            function() pb.decode("load_test", "\9\1") end)
+   fail("type mismatch at offset 2, <unknown> expected for type <unknown>, got bytes",
+            function() pb.decode("load_test", "\10\1") end)
+   fail("type mismatch at offset 2, <unknown> expected for type <unknown>, got gstart",
+            function() pb.decode("load_test", "\11\1") end)
+   fail("type mismatch at offset 2, <unknown> expected for type <unknown>, got gend",
+            function() pb.decode("load_test", "\12\1") end)
+   fail("type mismatch at offset 2, <unknown> expected for type <unknown>, got 32bit",
+            function() pb.decode("load_test", "\13\1") end)
 
    buf:reset()
    buf:pack("v(v(vsv(vsvvvv)))",
@@ -942,6 +1018,11 @@ function _G.test_load()
    assert(pb.type ".google.protobuf.FileDescriptorSet")
 end
 
-os.exit(lu.LuaUnit.run(), true)
+if _VERSION == "Lua 5.1" and not _G.jit then
+   lu.LuaUnit.run()
+else
+   os.exit(lu.LuaUnit.run(), true)
+end
+
 -- unixcc: run='rm *.gcda; lua test.lua; gcov pb.c'
 -- win32cc: run='del *.gcda & lua test.lua & gcov pb.c'

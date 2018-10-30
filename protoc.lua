@@ -172,7 +172,7 @@ function Lexer:number(opt)
    if not ns then
       return self:opterror(opt, 'floating-point number expected')
    end
-   local es, pos2 = self("([eE][+-]?[0-9]+)%s*()", pos)
+   local es, pos2 = self("(^[eE][+-]?[0-9]+)%s*()", pos)
    if d1 == "." and d2 == "." then
       return self:error "malformed floating-point number"
    end
@@ -389,16 +389,19 @@ local function field(self, lex, ident)
       name = lex:ident()
    end
    local info = {
-      name      = name;
-      number    = lex:expected "=":integer();
-      label     = labels.optional;
-      type      = type;
-      type_name = type_name;
+      name      = name,
+      number    = lex:expected "=":integer(),
+      label     = ident == "map" and labels.repeated or labels.optional,
+      type      = type,
+      type_name = type_name
    }
    local options = inline_option(lex)
    if options then
       info.default_value, options.default = tostring(options.default), nil
       info.json_name, options.json_name = options.json_name, nil
+      if options.packed and options.packed == "false" then
+         options.packed = false
+      end
    end
    info.options = options
    if info.number <= 0 then

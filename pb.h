@@ -217,6 +217,8 @@ PB_API pb_Type  *pb_type   (pb_State *S, pb_Name *tname);
 PB_API pb_Field *pb_fname  (pb_Type *t,  pb_Name *tname);
 PB_API pb_Field *pb_field  (pb_Type *t,  int32_t number);
 
+PB_API pb_Name *pb_oneofname (pb_Type *t, int oneof_index);
+
 PB_API int pb_nexttype  (pb_State *S, pb_Type **ptype);
 PB_API int pb_nextfield (pb_Type *t, pb_Field **pfield);
 
@@ -293,10 +295,11 @@ struct pb_Field {
     pb_Type *type;
     pb_Name *default_value;
     int32_t  number;
-    unsigned type_id  : 29; /* PB_T* enum */
-    unsigned repeated : 1;
-    unsigned packed   : 1;
-    unsigned scalar   : 1;
+    unsigned oneof_idx : 24;
+    unsigned type_id   : 5; /* PB_T* enum */
+    unsigned repeated  : 1;
+    unsigned packed    : 1;
+    unsigned scalar    : 1;
 };
 
 struct pb_Type {
@@ -503,7 +506,7 @@ PB_API size_t pb_readbytes(pb_Slice *s, pb_Slice *pv) {
 
 PB_API size_t pb_readgroup(pb_Slice *s, uint32_t tag, pb_Slice *pv) {
     const char *p = s->p;
-    uint32_t newtag;
+    uint32_t newtag = 0;
     size_t count;
     assert(pb_gettype(tag) == PB_TGSTART);
     while ((count = pb_readvarint32(s, &newtag)) != 0) {
@@ -1110,6 +1113,12 @@ PB_API pb_Field *pb_field(pb_Type *t, int32_t number) {
     return fe ? fe->value : NULL;
 }
 
+PB_API pb_Name *pb_oneofname(pb_Type *t, int idx) {
+    pb_OneofEntry *oe = NULL;
+    if (t != NULL) oe = (pb_OneofEntry*)pb_gettable(&t->oneof_index, idx);
+    return oe ? oe->name : NULL;
+}
+
 PB_API int pb_nexttype(pb_State *S, pb_Type **ptype) {
     pb_TypeEntry *e = NULL;
     if (S != NULL) {
@@ -1262,8 +1271,6 @@ typedef struct pbL_FileInfo      pbL_FileInfo;
 #define pbL_add(A)    (pbL_grow(L, (void**)&(A), sizeof(*(A))), &(A)[pbL_rawh(A)[1]++])
 #define pbL_delete(A) ((A) ? (void)free(pbL_rawh(A)) : (void)0)
 
-static void pbL_DescriptorProto (pb_Loader *L, pbL_TypeInfo *info);
-
 struct pb_Loader {
     jmp_buf   jbuf;
     pb_Slice  s;
@@ -1313,25 +1320,14 @@ struct pbL_FileInfo {
     pbL_FieldInfo *extension;
 };
 
-static void pbL_grow(pb_Loader *L, void **pp, size_t obj_size) {
-    enum { SIZE, COUNT, FIELDS };
-    size_t *h = *pp ? pbL_rawh(*pp) : NULL;
-    if (h == NULL || h[SIZE] <= h[COUNT]) {
-        size_t newsize = (h ? h[SIZE] : 1) * 2;
-        size_t used = (h ? h[COUNT] : 0);
-        size_t *nh = (size_t*)realloc(h, sizeof(size_t)*2 + newsize*obj_size);
-        if (nh == NULL) longjmp(L->jbuf, PB_ENOMEM);
-        nh[SIZE]  = newsize;
-        nh[COUNT] = used;
-        *pp = nh + FIELDS;
-        memset((char*)*pp + used*obj_size, 0, (newsize - used)*obj_size);
-    }
-}
+static void pbL_readbytes(pb_Loader *L, pb_Slice *pv)
+{ if (pb_readbytes(&L->s, pv) == 0) longjmp(L->jbuf, 1); }
 
-static void pbL_readbytes(pb_Loader *L, pb_Slice *pv) {
-    if (pb_readbytes(&L->s, pv) == 0)
-        longjmp(L->jbuf, 1);
-}
+static void pbL_beginmsg(pb_Loader *L, pb_Slice *pv)
+{ pb_Slice v; pbL_readbytes(L, &v); *pv = L->s, L->s = v; }
+
+static void pbL_endmsg(pb_Loader *L, pb_Slice *pv)
+{ L->s = *pv; }
 
 static void pbL_readint32(pb_Loader *L, int32_t *pv) {
     uint32_t v;
@@ -1340,14 +1336,19 @@ static void pbL_readint32(pb_Loader *L, int32_t *pv) {
     *pv = (int32_t)v;
 }
 
-static void pbL_beginmsg(pb_Loader *L, pb_Slice *pv) {
-    pb_Slice v;
-    pbL_readbytes(L, &v);
-    *pv = L->s, L->s = v;
-}
-
-static void pbL_endmsg(pb_Loader *L, pb_Slice *pv) {
-    L->s = *pv;
+static void pbL_grow(pb_Loader *L, void **pp, size_t obj_size) {
+    enum { SIZE, COUNT, FIELDS };
+    size_t *h = *pp ? pbL_rawh(*pp) : NULL;
+    if (h == NULL || h[SIZE] <= h[COUNT]) {
+        size_t used = (h ? h[COUNT] : 0);
+		size_t size = (h ? h[SIZE] : 2), newsize = size + (size >> 1);
+		size_t *nh  = (size_t*)realloc(h, sizeof(size_t)*FIELDS + newsize*obj_size);
+        if (nh == NULL || newsize < size) longjmp(L->jbuf, PB_ENOMEM);
+        nh[SIZE]  = newsize;
+        nh[COUNT] = used;
+        *pp = nh + FIELDS;
+        memset((char*)*pp + used*obj_size, 0, (newsize - used)*obj_size);
+    }
 }
 
 static void pbL_FieldOptions(pb_Loader *L, pbL_FieldInfo *info) {
@@ -1572,22 +1573,13 @@ static void pbL_loadField(pb_State *S, pbL_FieldInfo *info, pb_Loader *L, pb_Typ
     if (!(f = pb_newfield(S, t, pb_newname(S, info->name), info->number)))
         return;
     f->default_value = pb_newname(S, info->default_value);
-    f->type     = ft;
-    f->type_id  = info->type;
-    f->repeated = info->label == 3; /* repeated */
-    f->packed   = info->packed >= 0 ? info->packed : L->is_proto3;
+    f->type      = ft;
+    f->oneof_idx = info->oneof_index;
+    f->type_id   = info->type;
+    f->repeated  = info->label == 3; /* repeated */
+    f->packed    = info->packed >= 0 ? info->packed : L->is_proto3;
     if (f->type_id >= 9 && f->type_id <= 12) f->packed = 0;
-    f->scalar   = f->type == NULL;
-    if (info->oneof_index != 0) {
-        pb_OneofEntry *fe, *e = (pb_OneofEntry*)pb_gettable(&t->oneof_index,
-                info->oneof_index), saved;
-        if (e != NULL) {
-            saved = *e;
-            fe = (pb_OneofEntry*)pb_settable(&t->oneof_index, (pb_Key)f);
-            fe->name = pb_usename(saved.name);
-            fe->index = saved.index;
-        }
-    }
+    f->scalar = (f->type == NULL);
 }
 
 static void pbL_loadType(pb_State *S, pbL_TypeInfo *info, pb_Loader *L) {
