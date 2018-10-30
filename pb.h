@@ -328,14 +328,13 @@ PB_API pb_Slice pb_lslice(const char *s, size_t len)
 
 static size_t pb_readvarint_slow(pb_Slice *s, uint64_t *pv) {
     uint64_t n = 0;
-    size_t i = 0, count = pb_slicelen(s);
-    while (i != count) {
-        int b = s->p[i] & 0x7F;
-        n |= (uint64_t)b << (7*i);
+    size_t i = 0;
+    while (s->p < s->end && i < 10) {
+        int b = *s->p++;    // need keep data continue sign bit.
+        n |= ((uint64_t)b & 0x7F) << (7*i);
         ++i;
         if ((b & 0x80) == 0) {
             *pv = n;
-            s->p += i;
             return i;
         }
     }
@@ -439,7 +438,7 @@ PB_API size_t pb_readfixed32(pb_Slice *s, uint32_t *pv) {
 PB_API size_t pb_readfixed64(pb_Slice *s, uint64_t *pv) {
     int i;
     uint64_t n = 0;
-    if (s->p + 8 < s->end)
+    if (s->p + 8 > s->end)
         return 0;
     for (i = 7; i >= 0; --i) {
         n <<= 8;
@@ -612,7 +611,7 @@ PB_API void pb_addvar32(pb_Buffer *b, uint32_t n) {
     } while (n != 0);
 }
 
-PB_API void pb_addfixed64(pb_Buffer *b, uint64_t n) {
+PB_API void pb_addfixed32(pb_Buffer *b, uint32_t n) {
     char *ch = (char*)pb_prepbuffsize(b, 4);
     *ch++ = n & 0xFF; n >>= 8;
     *ch++ = n & 0xFF; n >>= 8;
@@ -621,7 +620,7 @@ PB_API void pb_addfixed64(pb_Buffer *b, uint64_t n) {
     pb_addsize(b, 4);
 }
 
-PB_API void pb_addfixed32(pb_Buffer *b, uint32_t n) {
+PB_API void pb_addfixed64(pb_Buffer *b, uint64_t n) {
     char *ch = (char*)pb_prepbuffsize(b, 8);
     *ch++ = n & 0xFF; n >>= 8;
     *ch++ = n & 0xFF; n >>= 8;
@@ -645,21 +644,13 @@ PB_API int pb_addvalue(pb_Buffer *b, const pb_Value *v, int type) {
         pb_addkey(b, v->tag, PB_TBYTES);
         pb_addbytes(b, v->u.data);
         return 1;
-    case PB_Tdouble:
+    case PB_Tdouble: case PB_Tfixed64: case PB_Tsfixed64:
         pb_addkey(b, v->tag, PB_T64BIT);
         pb_addfixed64(b, v->u.fixed64);
         return 1;
-    case PB_Tfloat:
+    case PB_Tfloat: case PB_Tfixed32: case PB_Tsfixed32:
         pb_addkey(b, v->tag, PB_T32BIT);
         pb_addfixed32(b, v->u.fixed32);
-        return 1;
-    case PB_Tfixed32:
-        pb_addkey(b, v->tag, PB_T32BIT);
-        pb_addfixed32(b, v->u.fixed32);
-        return 1;
-    case PB_Tfixed64:
-        pb_addkey(b, v->tag, PB_T64BIT);
-        pb_addfixed64(b, v->u.fixed64);
         return 1;
     case PB_Tint32:
         pb_addkey(b, v->tag, PB_TVARINT);

@@ -234,11 +234,11 @@ static void encode_scalar(lua_State *L, pb_Buffer *b, pb_Field *f) {
         check_type(L, LUA_TSTRING, f);
         v.u.data = lpb_toslice(L, -1);
         break;
-    case PB_Tfixed32: case PB_Tint32: case PB_Tsint32: case PB_Tuint32:
+    case PB_Tfixed32: case PB_Tint32: case PB_Tsint32: case PB_Tuint32: case PB_Tsfixed32:
         v.u.fixed32 = (uint32_t)check_integer(L, f);
         break;
-    case PB_Tfixed64: case PB_Tint64: case PB_Tsint64: case PB_Tuint64:
-        v.u.fixed64 = (uint64_t)check_integer(L, f);
+    case PB_Tfixed64: case PB_Tint64: case PB_Tsint64: case PB_Tuint64: case PB_Tsfixed64:
+        v.u.fixed64 = (uint64_t)check_number(L, f);
         break;
     default:
         lua_pushfstring(L, "unknown type '%s' (%d)",
@@ -398,7 +398,7 @@ static void on_field(pb_Parser *p, pb_Value *v, pb_Field *f) {
         }
         break;
     default:
-        lua_pushinteger(L, v->u.fixed64);
+        lua_pushnumber(L, v->u.fixed64);
         break;
     }
     if (!f->repeated)
@@ -732,11 +732,11 @@ static int Lbuf_add(lua_State *L) {
     case PB_Tmessage: case PB_Tgroup:
         v.u.data = lpb_checkslice(L, 4);
         break;
-    case PB_Tfixed32: case PB_Tint32: case PB_Tuint32: case PB_Tsint32:
+    case PB_Tfixed32: case PB_Tint32: case PB_Tuint32: case PB_Tsint32: case PB_Tsfixed32:
         v.u.fixed32 = (uint32_t)luaL_checkinteger(L, 4);
         break;
     case PB_Tenum:
-    case PB_Tfixed64: case PB_Tint64: case PB_Tuint64: case PB_Tsint64:
+    case PB_Tfixed64: case PB_Tint64: case PB_Tuint64: case PB_Tsint64: case PB_Tsfixed64:
         v.u.fixed64 = (uint64_t)luaL_checkinteger(L, 4);
         break;
     default:
